@@ -1,7 +1,18 @@
+from modules.verification_engine import evaluate_erasure
+from modules.hash_verifier import verify_all_evidence
+from pathlib import Path
+import pandas as pd
 
+from modules.evidence_collector import (
+    scan_folder,
+    get_all_evidence,
+    ALLOWED_ROOT,
+    initialise_database
+)
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+initialise_database()
 
 # ----------------------------------
 # VANISH - Main Application
@@ -116,11 +127,18 @@ if page == "Dashboard":
 
     col1, col2, col3, col4 = st.columns(4)
 
+    evidence_count = len(get_all_evidence())
+    integrity_count = len(st.session_state.get("hash_results", []))
+    erasure_result = st.session_state.get("erasure_result")
+    erasure_status = (
+        erasure_result.get("status", "Not assessed")
+        if erasure_result else "Not assessed"
+    )
     metrics = [
-        ("Files Scanned", "0"),
-        ("Evidence Collected", "0"),
-        ("Residual Files", "0"),
-        ("Audit Status", "Ready")
+        ("Evidence Records", evidence_count),
+        ("Integrity Checks", integrity_count),
+        ("Erasure Assessment", erasure_status),
+        ("System Status", "Ready")
     ]
 
     for column, (label, value) in zip(
@@ -168,29 +186,7 @@ if page == "Dashboard":
 
 
 # ----------------------------------
-# Evidence Collection
-# ----------------------------------
-
-elif page == "Evidence Collection":
-
-    st.title("📁 Evidence Collection")
-
-    st.write(
-        "This module will scan authorised test folders "
-        "and collect file metadata."
-    )
-
-    st.info("Evidence collection engine: Coming in Day 2.")
-
-    st.write("Planned features:")
-    st.write("- Folder selection")
-    st.write("- File metadata extraction")
-    st.write("- Evidence timestamps")
-    st.write("- SHA-256 evidence records")
-
-
-# ----------------------------------
-# SHA-256 Verification
+# SHA-256 INTEGRITY VERIFICATION
 # ----------------------------------
 
 elif page == "SHA-256 Integrity Verification":
@@ -198,35 +194,269 @@ elif page == "SHA-256 Integrity Verification":
     st.title("🔏 SHA-256 Integrity Verification")
 
     st.write(
-        "This module will calculate and compare "
-        "cryptographic hashes of collected evidence."
+        "Compare previously collected SHA-256 hashes "
+        "against the current contents of evidence files."
     )
 
-    st.info("Hash verification engine: Coming in Day 3.")
+    if st.button("🔍 Verify Evidence Integrity"):
+
+        with st.spinner("Verifying evidence hashes..."):
+
+            results = verify_all_evidence()
+
+        if results:
+
+            st.session_state["hash_results"] = results
+
+            st.success(
+                f"Verification completed for {len(results)} records."
+            )
+
+        else:
+
+            st.warning("No stored evidence records found.")
+
+    results = st.session_state.get("hash_results", [])
+
+    if results:
+
+        df = pd.DataFrame(results)
+
+        st.subheader("Integrity Verification Results")
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        match_count = sum(
+            r["integrity_status"] == "MATCH"
+            for r in results
+        )
+
+        modified_count = sum(
+            r["integrity_status"] == "MODIFIED"
+            for r in results
+        )
+
+        missing_count = sum(
+            r["integrity_status"] == "MISSING"
+            for r in results
+        )
+
+        error_count = sum(
+            r["integrity_status"] in ["ERROR", "UNSTABLE"]
+            for r in results
+        )
+
+        st.divider()
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Matching", match_count)
+        c2.metric("Modified", modified_count)
+        c3.metric("Missing", missing_count)
+        c4.metric("Errors / Unstable", error_count)
+
+        st.caption(
+            "A matching hash establishes content consistency "
+            "with the recorded baseline, not proof of secure erasure."
+        )
 
 
 # ----------------------------------
-# Erasure Verification
+# EVIDENCE COLLECTION
+# ----------------------------------
+
+elif page == "Evidence Collection":
+
+    st.title("📁 Evidence Collection")
+
+    st.write(
+        "Scan authorised test folders and collect "
+        "digital forensic evidence."
+    )
+
+    st.info(
+        f"Authorised evidence directory: {ALLOWED_ROOT}"
+    )
+
+    # Choose a folder inside the evidence directory
+    folder_input = st.text_input(
+        "Enter test folder path",
+        value=str(ALLOWED_ROOT / "test_files")
+    )
+
+    if st.button("🔍 Start Forensic Scan"):
+
+        try:
+
+            with st.spinner(
+                "Collecting forensic evidence..."
+            ):
+
+                records = scan_folder(folder_input)
+
+            st.success(
+                f"Scan completed! {len(records)} "
+                "file records processed."
+            )
+
+            if records:
+
+                df = pd.DataFrame(records)
+
+                st.subheader("Collected Evidence")
+
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                successful = sum(
+                    r["collection_status"] == "COLLECTED"
+                    for r in records
+                )
+
+                failed = sum(
+                    r["collection_status"] == "ERROR"
+                    for r in records
+                )
+
+                unstable = sum(
+                    r["collection_status"] == "UNSTABLE"
+                    for r in records
+                )
+
+                col1, col2, col3 = st.columns(3)
+
+                col1.metric("Collected", successful)
+                col2.metric("Errors", failed)
+                col3.metric("Unstable", unstable)
+
+            else:
+
+                st.warning(
+                    "No files were found in this folder."
+                )
+
+        except (ValueError, OSError) as error:
+
+            st.error(f"Scan could not be completed: {error}")
+
+    # Display previous evidence records
+    st.divider()
+
+    st.subheader("Previously Collected Evidence")
+
+    previous_records = get_all_evidence()
+
+    if previous_records:
+
+        previous_df = pd.DataFrame(previous_records)
+
+        st.dataframe(
+            previous_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+
+        st.info("No evidence has been collected yet.")
+
+
+# ----------------------------------
+# ERASURE VERIFICATION
 # ----------------------------------
 
 elif page == "Erasure Verification":
 
-    st.title("🔍 Erasure Verification")
+    st.title("🔍 Erasure Verification Engine")
 
-    st.write("VANISH will classify evidence into four outcomes.")
+    st.write(
+        "Evaluate whether available forensic evidence "
+        "supports a digital erasure claim."
+    )
 
-    results = {
-        "Verified": "All defined checks passed within scope.",
-        "Partially Verified": "Some checks passed, but evidence is incomplete.",
-        "Failed": "Evidence contradicts the erasure claim.",
-        "Inconclusive": "Insufficient evidence for a conclusion."
-    }
+    st.warning(
+        "A missing file does not independently prove "
+        "permanent or secure erasure."
+    )
 
-    for status, description in results.items():
-        with st.expander(status):
-            st.write(description)
+    target_path = st.text_input(
+        "Target file path",
+        value=str(
+            ALLOWED_ROOT / "test_files" / "confidential.txt"
+        )
+    )
 
-    st.info("Decision engine: Coming in Day 3.")
+    st.subheader("Evidence Coverage")
+
+    st.caption(
+        "These checkboxes are analyst attestations. "
+        "They do not perform automatic backup or cloud scans."
+    )
+
+    backup_checked = st.checkbox(
+        "I have completed and documented the relevant backup checks."
+    )
+
+    cloud_checked = st.checkbox(
+        "I have completed and documented the relevant cloud checks."
+    )
+
+    if st.button("⚖️ Evaluate Erasure Claim"):
+
+        # Get current integrity results
+        integrity_results = verify_all_evidence()
+
+        result = evaluate_erasure(
+            target_path=target_path,
+            integrity_results=integrity_results,
+            backup_checked=backup_checked,
+            cloud_checked=cloud_checked
+        )
+
+        st.session_state["erasure_result"] = result
+
+    result = st.session_state.get("erasure_result")
+
+    if result:
+
+        st.divider()
+
+        st.subheader("Forensic Assessment")
+
+        status = result["status"]
+
+        if status == "VERIFIED":
+
+            st.success("VERIFIED")
+
+        elif status == "PARTIALLY VERIFIED":
+
+            st.warning("PARTIALLY VERIFIED")
+
+        elif status == "FAILED":
+
+            st.error("FAILED")
+
+        else:
+
+            st.info("INCONCLUSIVE")
+
+        st.write("**Reason for classification:**")
+
+        st.write(result["reason"])
+
+        st.caption(
+            "Assessment is restricted to the documented "
+            "investigation scope. It does not establish "
+            "the absence of every possible copy."
+        )
 
 
 # ----------------------------------
